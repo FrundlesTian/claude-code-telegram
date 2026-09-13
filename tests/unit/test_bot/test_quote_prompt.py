@@ -35,7 +35,11 @@ def test_partial_quote_takes_priority_over_reply_text():
 
     result = build_user_prompt(msg)
 
-    assert result == "> only this fragment\n\ntell me more about it"
+    assert result == (
+        "Quoted message (reference only):\n"
+        "> only this fragment\n\n"
+        "tell me more about it"
+    )
     assert "whole long original" not in result
 
 
@@ -43,7 +47,9 @@ def test_reply_without_partial_quote_uses_full_reply_text():
     reply = _make_message(text="original text")
     msg = _make_message(text="my reply", reply_to_message=reply)
 
-    assert build_user_prompt(msg) == "> original text\n\nmy reply"
+    assert build_user_prompt(msg) == (
+        "Quoted message (reference only):\n> original text\n\nmy reply"
+    )
 
 
 def test_reply_to_media_uses_caption():
@@ -52,7 +58,9 @@ def test_reply_to_media_uses_caption():
     reply = _make_message(text=None, caption="photo caption")
     msg = _make_message(text="what is this?", reply_to_message=reply)
 
-    assert build_user_prompt(msg) == "> photo caption\n\nwhat is this?"
+    assert build_user_prompt(msg) == (
+        "Quoted message (reference only):\n> photo caption\n\nwhat is this?"
+    )
 
 
 def test_multiline_quote_renders_every_line_with_prefix():
@@ -60,6 +68,7 @@ def test_multiline_quote_renders_every_line_with_prefix():
     msg = _make_message(text="comment", reply_to_message=reply)
 
     assert build_user_prompt(msg) == (
+        "Quoted message (reference only):\n"
         "> first line\n> second line\n> third line\n\ncomment"
     )
 
@@ -69,7 +78,9 @@ def test_blank_line_inside_quote_stays_as_bare_gt():
     reply = _make_message(text="para1\n\npara2")
     msg = _make_message(text="x", reply_to_message=reply)
 
-    assert build_user_prompt(msg) == "> para1\n>\n> para2\n\nx"
+    assert build_user_prompt(msg) == (
+        "Quoted message (reference only):\n> para1\n>\n> para2\n\nx"
+    )
 
 
 def test_reply_with_empty_text_and_caption_falls_through_to_plain():
@@ -85,7 +96,9 @@ def test_quote_without_reply_to_message_still_works():
     quote = SimpleNamespace(text="fragment")
     msg = _make_message(text="ack", quote=quote, reply_to_message=None)
 
-    assert build_user_prompt(msg) == "> fragment\n\nack"
+    assert build_user_prompt(msg) == (
+        "Quoted message (reference only):\n> fragment\n\nack"
+    )
 
 
 def test_user_text_only_quote_no_new_text_returns_quote_alone():
@@ -94,4 +107,6 @@ def test_user_text_only_quote_no_new_text_returns_quote_alone():
     quote = SimpleNamespace(text="just the quote")
     msg = _make_message(text="", quote=quote)
 
-    assert build_user_prompt(msg) == "> just the quote"
+    assert build_user_prompt(msg) == (
+        "Quoted message (reference only):\n> just the quote"
+    )

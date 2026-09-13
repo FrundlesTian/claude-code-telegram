@@ -18,6 +18,7 @@ def build_user_prompt(message: Any) -> str:
 
     Shape, when reply/quote context is present::
 
+        Quoted message (reference only):
         > quoted fragment line 1
         > quoted fragment line 2
 
@@ -34,10 +35,11 @@ def build_user_prompt(message: Any) -> str:
         return user_text
 
     blockquote = "\n".join(f"> {line}" if line else ">" for line in quoted.split("\n"))
+    quoted_context = f"Quoted message (reference only):\n{blockquote}"
     if not user_text:
-        return blockquote
+        return quoted_context
 
-    return f"{blockquote}\n\n{user_text}"
+    return f"{quoted_context}\n\n{user_text}"
 
 
 def _extract_quoted_text(message: Any) -> Optional[str]:
