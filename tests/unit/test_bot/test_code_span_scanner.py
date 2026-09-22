@@ -29,6 +29,21 @@ def _distinct_runs(size: int) -> str:
     return "".join(parts)
 
 
+def _mirrored_across_a_newline(distinct_lengths: int) -> str:
+    """Runs 1..K, a newline, then K..1.
+
+    Every opener's only same-length partner is at the far end of the text and
+    on the other side of the line break, so every one of them is looked up and
+    rejected. Deciding that by scanning the gap costs the whole distance and
+    puts the pass back where the regex was; the distinct-length corpus above
+    does not reach the check at all, because those openers have no partner to
+    look at.
+    """
+    head = "".join("`" * k + "a" for k in range(1, distinct_lengths + 1))
+    tail = "".join("`" * k + "a" for k in range(distinct_lengths, 0, -1))
+    return head + "\n" + tail
+
+
 class TestMatchesTheRegexItReplaced:
     """Same output, or the linearity fix would be a behaviour change."""
 
@@ -114,3 +129,20 @@ class TestStaysLinear:
         text = _distinct_runs(64_000)
 
         assert _extract_code_spans(text, _render) == text
+
+    # Scanning the gap instead of searching it takes 1.07s on the input below,
+    # so this budget fails on that implementation and passes on this one with
+    # roughly fifty times to spare.
+    NEWLINE_BUDGET_SECONDS = 0.5
+
+    def test_partners_rejected_across_a_line_break_are_cheap_too(self):
+        """Every opener here is looked up, and every one is rejected."""
+        text = _mirrored_across_a_newline(2560)
+        assert len(text) > 6_000_000
+
+        started = time.perf_counter()
+        result = _extract_code_spans(text, _render)
+        elapsed = time.perf_counter() - started
+
+        assert result == text, "nothing should pair across the newline"
+        assert elapsed < self.NEWLINE_BUDGET_SECONDS, f"took {elapsed:.2f}s"

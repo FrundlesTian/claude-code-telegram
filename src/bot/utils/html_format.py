@@ -6,6 +6,7 @@ Claude's output which contains underscores, asterisks, brackets, etc.
 """
 
 import re
+from bisect import bisect_left
 from typing import Callable, Dict, List, Tuple
 
 
@@ -43,7 +44,13 @@ def _extract_code_spans(text: str, render: Callable[[str], str]) -> str:
     the rest of the line for every opener that never closes: on a reply whose
     backtick runs are all of different lengths that is superlinear, 313ms at
     64KB and 2.4s at 256KB, blocking the event loop for every other user.
-    Pre-computing each run's next same-length run makes this pass linear.
+
+    Both lookups here are therefore O(1) or O(log n) rather than a scan: each
+    run's next same-length partner is pre-computed in one backward pass, and
+    "is there a newline in between" is a binary search over the newline
+    offsets. Scanning the gap instead would reproduce the same shape -- an
+    opener whose only partner sits at the far end of the text, across a line
+    break, pays for the whole distance and is then skipped.
     """
     runs = [(m.start(), m.end()) for m in re.finditer(r"`+", text)]
     if not runs:
@@ -56,6 +63,12 @@ def _extract_code_spans(text: str, render: Callable[[str], str]) -> str:
         next_same[i] = seen.get(length, -1)
         seen[length] = i
 
+    newlines = [m.start() for m in re.finditer("\n", text)]
+
+    def _crosses_a_line(start: int, end: int) -> bool:
+        at = bisect_left(newlines, start)
+        return at < len(newlines) and newlines[at] < end
+
     out: List[str] = []
     cursor = 0
     i = 0
@@ -64,7 +77,7 @@ def _extract_code_spans(text: str, render: Callable[[str], str]) -> str:
         close = next_same[i]
         # A span does not span lines, so an opener whose only same-length
         # partner sits beyond a newline is just text.
-        if close == -1 or "\n" in text[open_end : runs[close][0]]:
+        if close == -1 or _crosses_a_line(open_end, runs[close][0]):
             i += 1
             continue
         out.append(text[cursor:start])
