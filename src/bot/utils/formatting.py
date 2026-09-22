@@ -160,7 +160,8 @@ def format_stop_reason(response: "ClaudeResponse") -> Optional[str]:
 
         sentence = f"⚠️ Stopped: {reason}"
         if response.num_turns:
-            sentence += f" after {response.num_turns} turns"
+            turns = "turn" if response.num_turns == 1 else "turns"
+            sentence += f" after {response.num_turns} {turns}"
         lines.append(sentence + ". Send a message to continue.")
 
         # A terminal error carries its prose in errors[]; for anything the

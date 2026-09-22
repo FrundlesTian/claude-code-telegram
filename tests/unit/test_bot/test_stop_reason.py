@@ -81,6 +81,14 @@ class TestFormatStopReason:
         assert footer is not None
         assert "the API returned an error" in footer
 
+    def test_a_single_turn_is_singular(self):
+        footer = format_stop_reason(
+            _response(result_subtype="error_max_turns", num_turns=1)
+        )
+
+        assert footer is not None
+        assert "after 1 turn." in footer
+
     def test_no_turn_count_when_none_were_recorded(self):
         footer = format_stop_reason(
             _response(result_subtype="error_max_turns", num_turns=0)
