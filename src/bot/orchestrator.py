@@ -1113,15 +1113,30 @@ class MessageOrchestrator:
                     logger.warning("Failed to log interaction", error=str(e))
 
             # Format response (no reply_markup — strip keyboards)
-            from .utils.formatting import ResponseFormatter
+            from .utils.formatting import (
+                ResponseFormatter,
+                format_permission_denials,
+                format_stop_reason,
+            )
 
             formatter = ResponseFormatter(self.settings)
 
             response_content = claude_response.content
             if claude_response.interrupted:
+                # The user already knows why this one stopped, so only the
+                # blocked calls are worth adding.
                 response_content = (
                     response_content or ""
                 ) + "\n\n_(Interrupted by user)_"
+                denials = format_permission_denials(claude_response.permission_denials)
+                if denials:
+                    response_content += "\n\n" + denials
+            else:
+                # Say why the run stopped when it did not finish on its own,
+                # and list any tool calls that were blocked (#230, #172).
+                stop_footer = format_stop_reason(claude_response)
+                if stop_footer:
+                    response_content = (response_content or "") + stop_footer
 
             formatted_messages = formatter.format_claude_response(response_content)
 

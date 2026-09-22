@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **A run that stops early no longer reports success**: Claude produces no final text when the CLI kills a run at the turn limit, so the bot fell through to its "✅ Task completed" placeholder and told the user the work was done. A run that died at turn 10 mid-task and a run that finished were indistinguishable in Telegram (#172). `ResultMessage.subtype` is now read alongside the cost and session id, the placeholder claims completion only for `success`, and the reply carries a footer saying why the run ended — turn limit, cost budget, cancellation, or an unrecognised reason named by its raw subtype — with the turn count and a prompt to send another message to continue. Both agentic and classic mode render it (#230)
+
+### Added
+- **Blocked tool calls are reported to the user**: `ResultMessage.permission_denials` is now surfaced as a footer line listing what was refused and its most identifying argument, e.g. `🚫 2 tool calls were blocked: Write(/etc/hosts), Bash(cd /)`. This bot generates those denials itself — every `APPROVED_DIRECTORY` rejection, every Bash boundary violation, every Deny on an interactive approval prompt — and until now the only account of them a user saw was Claude's own narration of what it thought had happened, which is not authoritative. The line appears on successful runs too, since a denial does not by itself end a run
+- **`stop_reason`, `terminal_reason` and `errors` on `ClaudeResponse`**: the remaining stop-reason fields the 0.2 SDK added are captured and written to the structlog event for any run that did not end cleanly, so the reason is in the logs even where it is not worth showing in Telegram. They are not persisted yet; that is a `claude_interactions` schema change
+
 ## [1.8.0] - 2026-09-22
 
 Released as a minor rather than a patch: `claude-agent-sdk` moves from the 0.1

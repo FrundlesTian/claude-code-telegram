@@ -2,12 +2,148 @@
 
 import re
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from ...config.settings import Settings
 from .html_format import escape_html, markdown_to_telegram_html
+
+if TYPE_CHECKING:  # pragma: no cover - import cycle guard, typing only
+    from ...claude.sdk_integration import ClaudeResponse
+
+
+# Longest tool argument shown inside the blocked-calls list.
+DENIAL_ARG_MAX_LEN = 40
+# Blocked calls listed in full before the rest are summarised as "and N more".
+DENIAL_LIST_MAX = 5
+# Longest CLI error string echoed into the footer.
+STOP_DETAIL_MAX_LEN = 200
+
+# ResultMessage.subtype -> the clause that follows "Stopped: ". Only
+# non-success subtypes appear; the CLI's vocabulary is open-ended, so anything
+# unrecognised falls back to a generic clause naming the raw value.
+SUBTYPE_STOP_REASONS = {
+    "error_max_turns": "turn limit reached",
+    "error_max_budget_usd": "cost budget reached",
+    "error_during_execution": "the run hit an error and could not continue",
+}
+
+# ResultMessage.terminal_reason -> the same clause, preferred over the subtype
+# when it is one we recognise. The SDK types this ``str | None`` with no enum,
+# so unknown values are ignored rather than guessed at.
+TERMINAL_STOP_REASONS = {
+    "max_turns": "turn limit reached",
+    "aborted_streaming": "the run was cancelled",
+    "aborted_tools": "the run was cancelled while a tool was running",
+    "api_error": "the API returned an error",
+    "budget_exceeded": "cost budget reached",
+    "max_budget": "cost budget reached",
+}
+
+# Clauses that already say everything the CLI's own prose would; echoing
+# errors[] under one of these just repeats the sentence above it.
+SELF_EXPLANATORY_STOP_REASONS = {
+    "turn limit reached",
+    "cost budget reached",
+    "the run was cancelled",
+    "the run was cancelled while a tool was running",
+}
+
+
+def _shorten(text: str, limit: int) -> str:
+    """Collapse whitespace and clip to ``limit`` characters."""
+    collapsed = " ".join(text.split())
+    if len(collapsed) <= limit:
+        return collapsed
+    return collapsed[: limit - 1] + "…"
+
+
+def _denial_argument(tool_input: Dict[str, Any]) -> str:
+    """Pick the most identifying argument of a blocked tool call."""
+    if not isinstance(tool_input, dict):
+        return ""
+
+    for key in ("file_path", "path", "notebook_path", "command", "pattern", "url"):
+        value = tool_input.get(key)
+        if isinstance(value, str) and value.strip():
+            return _shorten(value, DENIAL_ARG_MAX_LEN)
+    return ""
+
+
+def format_permission_denials(denials: List[Dict[str, Any]]) -> Optional[str]:
+    """Summarise the tool calls a run had blocked, or None if there were none.
+
+    This bot generates denials itself -- every APPROVED_DIRECTORY rejection,
+    every Bash boundary violation, every Deny on an interactive approval
+    prompt -- and until now the only account of them a user saw was Claude's
+    own narration, which is not authoritative.
+    """
+    if not denials or not isinstance(denials, list):
+        return None
+
+    described: List[str] = []
+    for denial in denials[:DENIAL_LIST_MAX]:
+        if not isinstance(denial, dict):
+            continue
+        name = str(denial.get("tool_name") or "unknown")
+        argument = _denial_argument(denial.get("tool_input") or {})
+        described.append(f"{name}({argument})" if argument else name)
+
+    if not described:
+        return None
+
+    remaining = len(denials) - len(described)
+    if remaining > 0:
+        described.append(f"and {remaining} more")
+
+    count = len(denials)
+    noun = "tool call was" if count == 1 else "tool calls were"
+    return f"🚫 {count} {noun} blocked: " + ", ".join(described)
+
+
+def format_stop_reason(response: "ClaudeResponse") -> Optional[str]:
+    """Build the footer explaining why a run ended, or None if it ended cleanly.
+
+    A run killed at the turn limit produces no final text, so without this the
+    bot falls through to its "Task completed" placeholder and reports a
+    truncated run as a success (#172).
+
+    The returned text is deliberately plain -- no Markdown -- because it
+    carries raw tool arguments and CLI subtypes, which are full of the
+    characters Telegram's Markdown would choke on.
+    """
+    lines: List[str] = []
+
+    if not response.completed_normally:
+        terminal = (response.terminal_reason or "").strip().lower()
+        subtype = (response.result_subtype or "").strip().lower()
+        reason = TERMINAL_STOP_REASONS.get(terminal) or SUBTYPE_STOP_REASONS.get(
+            subtype
+        )
+        if reason is None:
+            reason = f"the run ended early ({subtype or terminal or 'unknown reason'})"
+
+        sentence = f"⚠️ Stopped: {reason}"
+        if response.num_turns:
+            sentence += f" after {response.num_turns} turns"
+        lines.append(sentence + ". Send a message to continue.")
+
+        # A terminal error carries its prose in errors[]; for anything the
+        # clause above does not already explain, that is the only place the
+        # actual cause appears.
+        if reason not in SELF_EXPLANATORY_STOP_REASONS:
+            detail = next((e.strip() for e in response.errors if e and e.strip()), None)
+            if detail:
+                lines.append(_shorten(detail, STOP_DETAIL_MAX_LEN))
+
+    denials = format_permission_denials(response.permission_denials)
+    if denials:
+        lines.append(denials)
+
+    if not lines:
+        return None
+    return "\n\n" + "\n".join(lines)
 
 
 @dataclass
