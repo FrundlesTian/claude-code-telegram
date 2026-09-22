@@ -19,6 +19,8 @@ DENIAL_ARG_MAX_LEN = 40
 DENIAL_LIST_MAX = 5
 # Longest CLI error string echoed into the footer.
 STOP_DETAIL_MAX_LEN = 200
+# Shown in place of a stop reason when the user pressed Stop themselves.
+INTERRUPTED_NOTE = "_(Interrupted by user)_"
 
 # ResultMessage.subtype -> the clause that follows "Stopped: ". Only
 # non-success subtypes appear; the CLI's vocabulary is open-ended, so anything
@@ -59,6 +61,21 @@ def _shorten(text: str, limit: int) -> str:
     return collapsed[: limit - 1] + "…"
 
 
+def _inline_code(text: str) -> str:
+    """Wrap machine output so the Markdown pass leaves it alone.
+
+    The footer is appended to Claude's reply and goes through
+    ``markdown_to_telegram_html`` with it, which italicises ``_like this_``.
+    That mangles paths and shell commands, and on a line listing several
+    denials the italics bleed from one entry into the next. Inline code is
+    extracted before any Markdown conversion and escaped verbatim, so it is
+    the one wrapper that survives. A backtick inside the value would close
+    the span early, so those are dropped -- the value is already clipped for
+    length, so it is a display string, not a faithful copy.
+    """
+    return "`" + text.replace("`", "") + "`"
+
+
 def _denial_argument(tool_input: Dict[str, Any]) -> str:
     """Pick the most identifying argument of a blocked tool call."""
     if not isinstance(tool_input, dict):
@@ -88,7 +105,7 @@ def format_permission_denials(denials: List[Dict[str, Any]]) -> Optional[str]:
             continue
         name = str(denial.get("tool_name") or "unknown")
         argument = _denial_argument(denial.get("tool_input") or {})
-        described.append(f"{name}({argument})" if argument else name)
+        described.append(f"{name}({_inline_code(argument)})" if argument else name)
 
     if not described:
         return None
@@ -109,13 +126,19 @@ def format_stop_reason(response: "ClaudeResponse") -> Optional[str]:
     bot falls through to its "Task completed" placeholder and reports a
     truncated run as a success (#172).
 
-    The returned text is deliberately plain -- no Markdown -- because it
-    carries raw tool arguments and CLI subtypes, which are full of the
-    characters Telegram's Markdown would choke on.
+    The footer is appended to Claude's reply and renders with it, so the parts
+    that carry machine output -- tool arguments, the CLI's own error prose --
+    are wrapped as inline code to survive the Markdown pass unchanged. See
+    :func:`_inline_code`.
     """
     lines: List[str] = []
 
-    if not response.completed_normally:
+    if response.interrupted:
+        # The user pressed Stop, so they know why this one ended; naming the
+        # cancellation a second time would only be noise. The blocked calls
+        # below are still worth having.
+        lines.append(INTERRUPTED_NOTE)
+    elif not response.completed_normally:
         terminal = (response.terminal_reason or "").strip().lower()
         subtype = (response.result_subtype or "").strip().lower()
         reason = TERMINAL_STOP_REASONS.get(terminal) or SUBTYPE_STOP_REASONS.get(
@@ -135,7 +158,7 @@ def format_stop_reason(response: "ClaudeResponse") -> Optional[str]:
         if reason not in SELF_EXPLANATORY_STOP_REASONS:
             detail = next((e.strip() for e in response.errors if e and e.strip()), None)
             if detail:
-                lines.append(_shorten(detail, STOP_DETAIL_MAX_LEN))
+                lines.append(_inline_code(_shorten(detail, STOP_DETAIL_MAX_LEN)))
 
     denials = format_permission_denials(response.permission_denials)
     if denials:
@@ -144,6 +167,16 @@ def format_stop_reason(response: "ClaudeResponse") -> Optional[str]:
     if not lines:
         return None
     return "\n\n" + "\n".join(lines)
+
+
+def with_stop_reason(response: "ClaudeResponse") -> str:
+    """Claude's reply plus its stop-reason footer.
+
+    Every place the bot renders a Claude reply goes through this, so a run
+    truncated at the turn limit cannot read as a success through one entry
+    point while saying so through another (#172, #230).
+    """
+    return (response.content or "") + (format_stop_reason(response) or "")
 
 
 @dataclass

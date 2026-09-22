@@ -8,12 +8,24 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
 from ...claude.facade import ClaudeIntegration
+from ...claude.sdk_integration import ClaudeResponse
 from ...config.settings import Settings
 from ...security.audit import AuditLogger
 from ...security.validators import SecurityValidator
-from ..utils.html_format import escape_html
+from ..utils.formatting import format_stop_reason
+from ..utils.html_format import escape_html, markdown_to_telegram_html
 
 logger = structlog.get_logger()
+
+
+def _stop_reason_html(claude_response: ClaudeResponse) -> str:
+    """The stop-reason footer as Telegram HTML, or "" when there is none.
+
+    These two handlers build their message as HTML by hand rather than going
+    through ResponseFormatter, so the footer is converted here instead.
+    """
+    footer = format_stop_reason(claude_response)
+    return markdown_to_telegram_html(footer) if footer else ""
 
 
 def _is_within_root(path: Path, root: Path) -> bool:
@@ -584,10 +596,13 @@ async def _handle_continue_action(query, context: ContextTypes.DEFAULT_TYPE) -> 
             # Update session ID in context
             context.user_data["claude_session_id"] = claude_response.session_id
 
-            # Send Claude's response
+            # Send Claude's response. The footer is built last, after the
+            # body is clipped, so clipping can never swallow it.
+            body = escape_html(claude_response.content[:500])
+            if len(claude_response.content) > 500:
+                body += "..."
             await query.message.reply_text(
-                f"✅ <b>Session Continued</b>\n\n"
-                f"{escape_html(claude_response.content[:500])}{'...' if len(claude_response.content) > 500 else ''}",
+                f"✅ <b>Session Continued</b>\n\n{body}{_stop_reason_html(claude_response)}",
                 parse_mode="HTML",
             )
         else:
@@ -930,9 +945,17 @@ async def handle_quick_action_callback(
                 response_text = (
                     response_text[:4000] + "...\n\n<i>(Response truncated)</i>"
                 )
+            response_text += _stop_reason_html(claude_response)
+
+            # The heading must not say "Complete" for a run that was cut
+            # short -- that is the same false report as #172, in a header.
+            if claude_response.completed_normally:
+                heading = f"✅ <b>{action.icon} {escape_html(action.name)} Complete</b>"
+            else:
+                heading = f"⚠️ <b>{action.icon} {escape_html(action.name)} Stopped</b>"
 
             await query.message.reply_text(
-                f"✅ <b>{action.icon} {escape_html(action.name)} Complete</b>\n\n{response_text}",
+                f"{heading}\n\n{response_text}",
                 parse_mode="HTML",
             )
         else:

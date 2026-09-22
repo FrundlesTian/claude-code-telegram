@@ -15,11 +15,11 @@ from ...claude.exceptions import (
     ClaudeSessionError,
     ClaudeTimeoutError,
 )
-from ...claude.sdk_integration import ClaudeResponse
 from ...config.settings import Settings
 from ...security.audit import AuditLogger
 from ...security.rate_limiter import RateLimiter
 from ...security.validators import SecurityValidator
+from ..utils.formatting import with_stop_reason
 from ..utils.html_format import escape_html
 from ..utils.image_extractor import (
     ImageAttachment,
@@ -28,17 +28,6 @@ from ..utils.image_extractor import (
 )
 
 logger = structlog.get_logger()
-
-
-def _response_text(claude_response: ClaudeResponse) -> str:
-    """Claude's reply, plus the footer saying why the run stopped (#230, #172).
-
-    Classic mode reaches Claude through four separate call sites; they all
-    render the reply the same way, so they all need the same footer.
-    """
-    from ..utils.formatting import format_stop_reason
-
-    return (claude_response.content or "") + (format_stop_reason(claude_response) or "")
 
 
 async def _format_progress_update(update_obj) -> Optional[str]:
@@ -437,7 +426,7 @@ async def handle_text_message(
 
             formatter = ResponseFormatter(settings)
             formatted_messages = formatter.format_claude_response(
-                _response_text(claude_response)
+                with_stop_reason(claude_response)
             )
 
         except Exception as e:
@@ -845,7 +834,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
             formatter = ResponseFormatter(settings)
             formatted_messages = formatter.format_claude_response(
-                _response_text(claude_response)
+                with_stop_reason(claude_response)
             )
 
             # Delete progress message
@@ -967,7 +956,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
                 formatter = ResponseFormatter(settings)
                 formatted_messages = formatter.format_claude_response(
-                    _response_text(claude_response)
+                    with_stop_reason(claude_response)
                 )
 
                 # Delete progress message
@@ -1097,7 +1086,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
             formatter = ResponseFormatter(settings)
             formatted_messages = formatter.format_claude_response(
-                _response_text(claude_response)
+                with_stop_reason(claude_response)
             )
 
             await progress_msg.delete()

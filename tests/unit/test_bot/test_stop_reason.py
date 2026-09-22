@@ -1,6 +1,11 @@
 """Tests for the footer that says why a Claude run stopped (#230, #172)."""
 
-from src.bot.utils.formatting import format_permission_denials, format_stop_reason
+from src.bot.utils.formatting import (
+    format_permission_denials,
+    format_stop_reason,
+    with_stop_reason,
+)
+from src.bot.utils.html_format import markdown_to_telegram_html
 from src.claude.sdk_integration import ClaudeResponse
 
 
@@ -104,7 +109,7 @@ class TestFormatStopReason:
         )
 
         assert footer is not None
-        assert "1 tool call was blocked: Write(/etc/hosts)" in footer
+        assert "1 tool call was blocked: Write(`/etc/hosts`)" in footer
         assert "Stopped" not in footer
 
     def test_stop_line_and_denials_together(self):
@@ -134,7 +139,7 @@ class TestFormatPermissionDenials:
             ]
         )
 
-        assert line == "🚫 2 tool calls were blocked: Write(/etc/hosts), Bash(cd /)"
+        assert line == "🚫 2 tool calls were blocked: Write(`/etc/hosts`), Bash(`cd /`)"
 
     def test_tool_without_a_recognised_argument(self):
         line = format_permission_denials([{"tool_name": "WebSearch", "tool_input": {}}])
@@ -155,7 +160,7 @@ class TestFormatPermissionDenials:
             [{"tool_name": "Bash", "tool_input": {"command": "ls\n  -la"}}]
         )
 
-        assert line == "🚫 1 tool call was blocked: Bash(ls -la)"
+        assert line == "🚫 1 tool call was blocked: Bash(`ls -la`)"
 
     def test_long_lists_are_summarised(self):
         denials = [{"tool_name": f"Tool{i}", "tool_input": {}} for i in range(8)]
@@ -177,4 +182,181 @@ class TestFormatPermissionDenials:
     def test_missing_tool_name_falls_back(self):
         line = format_permission_denials([{"tool_input": {"file_path": "/x"}}])
 
-        assert line == "🚫 1 tool call was blocked: unknown(/x)"
+        assert line == "🚫 1 tool call was blocked: unknown(`/x`)"
+
+
+class TestInterruptedRuns:
+    """The user pressed Stop; they do not need to be told why it ended."""
+
+    def test_note_replaces_the_stop_reason(self):
+        footer = format_stop_reason(
+            _response(
+                interrupted=True,
+                result_subtype="error_during_execution",
+                terminal_reason="aborted_streaming",
+            )
+        )
+
+        assert footer == "\n\n_(Interrupted by user)_"
+
+    def test_wording_is_unchanged_from_before_the_footer_existed(self):
+        response = _response(content="Partial output.", interrupted=True)
+
+        assert (
+            with_stop_reason(response) == "Partial output.\n\n_(Interrupted by user)_"
+        )
+
+    def test_blocked_calls_are_still_listed(self):
+        footer = format_stop_reason(
+            _response(
+                interrupted=True,
+                permission_denials=[{"tool_name": "Bash", "tool_input": {}}],
+            )
+        )
+
+        assert footer is not None
+        assert "_(Interrupted by user)_" in footer
+        assert "1 tool call was blocked: Bash" in footer
+        assert "Stopped" not in footer
+
+
+class TestFooterSurvivesTheMarkdownPass:
+    """The footer is rendered with Claude's reply, so Markdown runs over it."""
+
+    def test_underscores_in_a_path_are_not_italicised(self):
+        """Without inline code, /tmp/_a_b_ renders as /tmp/<i>a_b</i>."""
+        footer = format_stop_reason(
+            _response(
+                result_subtype="success",
+                permission_denials=[
+                    {"tool_name": "Write", "tool_input": {"file_path": "/tmp/_a_b_"}}
+                ],
+            )
+        )
+
+        assert footer is not None
+        html = markdown_to_telegram_html(footer)
+        assert "<code>/tmp/_a_b_</code>" in html
+        assert "<i>" not in html
+
+    def test_italics_do_not_bleed_between_two_denials(self):
+        """One underscore per entry used to open an italic span in the next."""
+        footer = format_stop_reason(
+            _response(
+                result_subtype="success",
+                permission_denials=[
+                    {"tool_name": "Read", "tool_input": {"file_path": "/x/_p_"}},
+                    {"tool_name": "Write", "tool_input": {"file_path": "/y/_q_"}},
+                ],
+            )
+        )
+
+        assert footer is not None
+        html = markdown_to_telegram_html(footer)
+        assert "<code>/x/_p_</code>" in html
+        assert "<code>/y/_q_</code>" in html
+        assert "<i>" not in html
+
+    def test_shell_metacharacters_are_html_escaped(self):
+        footer = format_stop_reason(
+            _response(
+                result_subtype="success",
+                permission_denials=[
+                    {"tool_name": "Bash", "tool_input": {"command": "cd / && ls"}}
+                ],
+            )
+        )
+
+        assert footer is not None
+        html = markdown_to_telegram_html(footer)
+        assert "<code>cd / &amp;&amp; ls</code>" in html
+
+    def test_a_backtick_in_the_argument_cannot_break_the_span(self):
+        footer = format_stop_reason(
+            _response(
+                result_subtype="success",
+                permission_denials=[
+                    {"tool_name": "Bash", "tool_input": {"command": "echo `whoami`"}}
+                ],
+            )
+        )
+
+        assert footer is not None
+        html = markdown_to_telegram_html(footer)
+        assert "<code>echo whoami</code>" in html
+
+    def test_error_prose_is_not_italicised(self):
+        footer = format_stop_reason(
+            _response(
+                result_subtype="error_during_execution",
+                errors=["cannot read _config_ from *here*"],
+            )
+        )
+
+        assert footer is not None
+        html = markdown_to_telegram_html(footer)
+        assert "<i>" not in html
+        assert "<b>" not in html
+
+
+class TestWithStopReason:
+    """The helper every render site uses."""
+
+    def test_clean_run_is_the_content_unchanged(self):
+        response = _response(content="All done.", result_subtype="success")
+
+        assert with_stop_reason(response) == "All done."
+
+    def test_stopped_run_gets_the_footer(self):
+        response = _response(content="Partial.", result_subtype="error_max_turns")
+
+        text = with_stop_reason(response)
+
+        assert text.startswith("Partial.")
+        assert "turn limit reached" in text
+
+    def test_empty_content_still_carries_the_footer(self):
+        response = _response(content="", result_subtype="error_max_turns")
+
+        assert "turn limit reached" in with_stop_reason(response)
+
+
+class TestEveryRenderSiteCarriesTheFooter:
+    """A new entry point that renders a reply must not skip the footer.
+
+    The first cut of this fix covered `agentic_text` and the four sites in
+    `handlers/message.py` and missed five others, so a run truncated at the
+    turn limit still reported success through document upload, voice, photo,
+    `/continue` and the quick-action buttons. This walks the source rather
+    than trusting a list.
+    """
+
+    def test_format_claude_response_is_always_given_the_footer(self):
+        import ast
+        from pathlib import Path
+
+        import src.bot as bot_package
+
+        offenders = []
+        for path in sorted(Path(bot_package.__file__).parent.rglob("*.py")):
+            tree = ast.parse(path.read_text(), filename=str(path))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                name = func.attr if isinstance(func, ast.Attribute) else None
+                if name != "format_claude_response" or not node.args:
+                    continue
+                argument = node.args[0]
+                wrapped = (
+                    isinstance(argument, ast.Call)
+                    and isinstance(argument.func, ast.Name)
+                    and argument.func.id == "with_stop_reason"
+                )
+                if not wrapped:
+                    offenders.append(f"{path.name}:{node.lineno}")
+
+        assert offenders == [], (
+            "these calls render a Claude reply without the stop-reason "
+            f"footer: {offenders}"
+        )
