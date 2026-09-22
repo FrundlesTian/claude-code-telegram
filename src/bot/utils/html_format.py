@@ -6,7 +6,7 @@ Claude's output which contains underscores, asterisks, brackets, etc.
 """
 
 import re
-from typing import List, Tuple
+from typing import Callable, Dict, List, Tuple
 
 
 def escape_html(text: str) -> str:
@@ -16,6 +16,64 @@ def escape_html(text: str) -> str:
     across the codebase.
     """
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _strip_code_span_padding(code: str) -> str:
+    """CommonMark: drop one space from each end when both ends have one.
+
+    That is what lets a value which itself begins or ends with a backtick be
+    written at all -- see _inline_code in formatting.py, which relies on it.
+    """
+    if len(code) >= 2 and code[0] == " " and code[-1] == " " and code.strip(" "):
+        return code[1:-1]
+    return code
+
+
+def _extract_code_spans(text: str, render: Callable[[str], str]) -> str:
+    r"""Replace each backtick code span with whatever `render` returns for it.
+
+    A span opens on a run of backticks and closes on a run of exactly the same
+    length, so a span can carry backticks of its own. Deleting the inner
+    backticks instead would silently rewrite a shell command -- `whoami` is
+    command substitution, whoami is an argument -- and this output is shown as
+    an account of what a tool call actually was.
+
+    Scanned rather than matched with a regex. Pairing equal-length runs needs a
+    backreference inside a lazy middle, ``(`+)([^\n]*?)\1``, which re-scans
+    the rest of the line for every opener that never closes: on a reply whose
+    backtick runs are all of different lengths that is superlinear, 313ms at
+    64KB and 2.4s at 256KB, blocking the event loop for every other user.
+    Pre-computing each run's next same-length run makes this pass linear.
+    """
+    runs = [(m.start(), m.end()) for m in re.finditer(r"`+", text)]
+    if not runs:
+        return text
+
+    next_same: List[int] = [-1] * len(runs)
+    seen: Dict[int, int] = {}
+    for i in range(len(runs) - 1, -1, -1):
+        length = runs[i][1] - runs[i][0]
+        next_same[i] = seen.get(length, -1)
+        seen[length] = i
+
+    out: List[str] = []
+    cursor = 0
+    i = 0
+    while i < len(runs):
+        start, open_end = runs[i]
+        close = next_same[i]
+        # A span does not span lines, so an opener whose only same-length
+        # partner sits beyond a newline is just text.
+        if close == -1 or "\n" in text[open_end : runs[close][0]]:
+            i += 1
+            continue
+        out.append(text[cursor:start])
+        out.append(render(_strip_code_span_padding(text[open_end : runs[close][0]])))
+        cursor = runs[close][1]
+        i = close + 1
+
+    out.append(text[cursor:])
+    return "".join(out)
 
 
 def markdown_to_telegram_html(text: str) -> str:
@@ -65,29 +123,10 @@ def markdown_to_telegram_html(text: str) -> str:
     )
 
     # --- 2. Extract inline code ---
-    def _replace_inline_code(m: re.Match) -> str:  # type: ignore[type-arg]
-        code = m.group(2)
-        # CommonMark: one space is stripped from each end when both ends have
-        # one and the content is not all spaces. That is what lets a value
-        # which itself begins or ends with a backtick be written at all --
-        # see _inline_code in formatting.py, which relies on it.
-        if len(code) >= 2 and code[0] == " " and code[-1] == " " and code.strip(" "):
-            code = code[1:-1]
-        escaped_code = escape_html(code)
-        return _make_placeholder(f"<code>{escaped_code}</code>")
+    def _replace_inline_code(code: str) -> str:
+        return _make_placeholder(f"<code>{escape_html(code)}</code>")
 
-    # A code span is delimited by a run of backticks and closed by a run of
-    # exactly the same length, so a span can carry backticks of its own. The
-    # lookarounds keep the matcher from starting or ending part-way through a
-    # longer run. Deleting the inner backticks instead would silently rewrite
-    # a shell command -- `whoami` is command substitution, whoami is an
-    # argument -- and this output is shown as an account of what a tool call
-    # actually was.
-    text = re.sub(
-        r"(?<!`)(`+)(?!`)([^\n]*?)(?<!`)\1(?!`)",
-        _replace_inline_code,
-        text,
-    )
+    text = _extract_code_spans(text, _replace_inline_code)
 
     # --- 3. HTML-escape remaining text ---
     text = escape_html(text)

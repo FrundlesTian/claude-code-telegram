@@ -110,10 +110,12 @@ def format_permission_denials(denials: List[Dict[str, Any]]) -> Optional[str]:
     if not denials or not isinstance(denials, list):
         return None
 
+    # Filtered before slicing: a run of malformed entries at the front would
+    # otherwise swallow the whole list and report nothing was blocked.
+    usable = [denial for denial in denials if isinstance(denial, dict)]
+
     described: List[str] = []
-    for denial in denials[:DENIAL_LIST_MAX]:
-        if not isinstance(denial, dict):
-            continue
+    for denial in usable[:DENIAL_LIST_MAX]:
         name = str(denial.get("tool_name") or "unknown")
         argument = _denial_argument(denial.get("tool_input") or {})
         described.append(f"{name}({_inline_code(argument)})" if argument else name)

@@ -187,6 +187,18 @@ class TestFormatPermissionDenials:
     def test_non_list_input_is_ignored(self):
         assert format_permission_denials(None) is None
 
+    def test_malformed_entries_do_not_hide_the_ones_behind_them(self):
+        """Filtering after the slice let five bad entries swallow the list."""
+        denials = ["junk"] * 5 + [
+            {"tool_name": "Write", "tool_input": {"file_path": "/etc/hosts"}}
+        ]
+
+        line = format_permission_denials(denials)
+
+        assert line is not None
+        assert "Write(`/etc/hosts`)" in line
+        assert "6 tool calls were blocked" in line
+
     def test_missing_tool_name_falls_back(self):
         line = format_permission_denials([{"tool_input": {"file_path": "/x"}}])
 
