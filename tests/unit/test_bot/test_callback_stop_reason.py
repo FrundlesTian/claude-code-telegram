@@ -102,3 +102,55 @@ class TestQuickActionHeading:
         assert "Complete" not in text
         assert "Stopped" in text
         assert "turn limit reached after 10 turns" in text
+
+
+class TestQuickActionMessageLength:
+    """Telegram caps a message at 4096 characters and reply_text will not split.
+
+    Appending the footer after a fixed-size clip pushed a long reply past the
+    cap; the send raised, the handler's except reported "Action Error", and
+    the run that most needed its stop reason was the one that lost it.
+    """
+
+    TELEGRAM_LIMIT = 4096
+
+    async def test_long_stopped_reply_with_denials_still_fits(self, tmp_path):
+        response = _response(
+            content="x" * 10000,
+            result_subtype="error_during_execution",
+            errors=["y" * 500],
+            permission_denials=[
+                {"tool_name": f"Tool{i}", "tool_input": {"file_path": "z" * 100}}
+                for i in range(8)
+            ],
+        )
+
+        text = await _run_quick_action(response, Path(tmp_path))
+
+        assert len(text) <= self.TELEGRAM_LIMIT
+
+    async def test_the_footer_is_kept_and_the_body_is_what_gives(self, tmp_path):
+        response = _response(
+            content="x" * 10000,
+            result_subtype="error_max_turns",
+            terminal_reason="max_turns",
+            permission_denials=[
+                {"tool_name": "Write", "tool_input": {"file_path": "/etc/hosts"}}
+            ],
+        )
+
+        text = await _run_quick_action(response, Path(tmp_path))
+
+        assert len(text) <= self.TELEGRAM_LIMIT
+        assert "Stopped" in text
+        assert "turn limit reached after 10 turns" in text
+        assert "1 tool call was blocked" in text
+        assert "(Response truncated)" in text
+
+    async def test_a_short_reply_is_not_truncated(self, tmp_path):
+        text = await _run_quick_action(
+            _response(content="Short.", result_subtype="success"), Path(tmp_path)
+        )
+
+        assert "Short." in text
+        assert "truncated" not in text

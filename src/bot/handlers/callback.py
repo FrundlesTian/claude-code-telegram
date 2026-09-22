@@ -17,6 +17,11 @@ from ..utils.html_format import escape_html, markdown_to_telegram_html
 
 logger = structlog.get_logger()
 
+# Telegram caps a message at 4096 characters; ResponseFormatter works to 4000
+# for the same reason, so the hand-built callback messages do too.
+MAX_CALLBACK_MESSAGE_LEN = 4000
+TRUNCATION_NOTE = "...\n\n<i>(Response truncated)</i>"
+
 
 def _stop_reason_html(claude_response: ClaudeResponse) -> str:
     """The stop-reason footer as Telegram HTML, or "" when there is none.
@@ -939,14 +944,6 @@ async def handle_quick_action_callback(
         )
 
         if claude_response:
-            # Format and send the response
-            response_text = escape_html(claude_response.content)
-            if len(response_text) > 4000:
-                response_text = (
-                    response_text[:4000] + "...\n\n<i>(Response truncated)</i>"
-                )
-            response_text += _stop_reason_html(claude_response)
-
             # The heading must not say "Complete" for a run that was cut
             # short -- that is the same false report as #172, in a header.
             if claude_response.completed_normally:
@@ -954,8 +951,25 @@ async def handle_quick_action_callback(
             else:
                 heading = f"⚠️ <b>{action.icon} {escape_html(action.name)} Stopped</b>"
 
+            # Heading and footer are built first and Claude's own text is
+            # clipped to whatever room is left. Appending the footer after a
+            # fixed-size clip could push the message past Telegram's limit,
+            # and reply_text does not split: the send would raise, the
+            # handler's except would report "Action Error", and the run that
+            # most needs its stop reason would be the one that loses it.
+            footer = _stop_reason_html(claude_response)
+            prefix = f"{heading}\n\n"
+            room = MAX_CALLBACK_MESSAGE_LEN - len(prefix) - len(footer)
+
+            response_text = escape_html(claude_response.content)
+            if len(response_text) > room:
+                response_text = (
+                    response_text[: max(0, room - len(TRUNCATION_NOTE))]
+                    + TRUNCATION_NOTE
+                )
+
             await query.message.reply_text(
-                f"{heading}\n\n{response_text}",
+                f"{prefix}{response_text}{footer}",
                 parse_mode="HTML",
             )
         else:
