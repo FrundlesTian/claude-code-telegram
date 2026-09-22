@@ -54,8 +54,10 @@ logger = structlog.get_logger()
 # Fallback message when Claude produces no text but did use tools.
 TASK_COMPLETED_MSG = "✅ Task completed. Tools used: {tools_summary}"
 
-# Fallback message when a run stopped early without producing any text.
-TASK_STOPPED_MSG = "⚠️ Run stopped before finishing. Tools used: {tools_summary}"
+# Fallback message when a run stopped early without producing any text. The
+# stop-reason footer carries the warning and the reason, so this only reports
+# what the run got done -- otherwise the two stack up as "stopped" twice.
+TASK_STOPPED_MSG = "No final response. Tools used: {tools_summary}"
 
 # ResultMessage.subtype reported by the CLI for a run that ran to completion.
 RESULT_SUBTYPE_SUCCESS = "success"

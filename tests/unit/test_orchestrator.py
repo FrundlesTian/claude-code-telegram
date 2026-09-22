@@ -1143,3 +1143,26 @@ async def test_agentic_text_adds_no_footer_to_a_clean_run(agentic_settings, deps
     body = "\n".join(sent)
     assert "Stopped" not in body
     assert "blocked" not in body
+
+
+async def test_agentic_text_does_not_say_stopped_twice(agentic_settings, deps):
+    """The turn-limit-mid-tool-use case: no final text, so the placeholder
+    stands in for the reply and the footer explains. One warning, not two."""
+    from src.claude.sdk_integration import TASK_STOPPED_MSG, ClaudeResponse
+
+    response = ClaudeResponse(
+        content=TASK_STOPPED_MSG.format(tools_summary="Bash, Read"),
+        session_id="session-abc",
+        cost=0.1,
+        duration_ms=100,
+        num_turns=10,
+        result_subtype="error_max_turns",
+        terminal_reason="max_turns",
+    )
+
+    sent = await _run_agentic_text_with(response, agentic_settings, deps)
+
+    body = "\n".join(sent)
+    assert "No final response. Tools used: Bash, Read" in body
+    assert "turn limit reached after 10 turns" in body
+    assert body.count("⚠️") == 1

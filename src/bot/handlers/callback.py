@@ -33,6 +33,31 @@ def _stop_reason_html(claude_response: ClaudeResponse) -> str:
     return markdown_to_telegram_html(footer) if footer else ""
 
 
+def _compose_reply(
+    heading: str, claude_response: ClaudeResponse, body_limit: int
+) -> str:
+    """Heading, Claude's reply and its stop-reason footer, within the cap.
+
+    The heading and footer are sized first and the body is clipped to what is
+    left. Appending the footer to an already-clipped body can push the message
+    past Telegram's limit -- HTML escaping alone turns 500 characters of ``&``
+    into 2500 -- and reply_text does not split: the send raises, the handler's
+    except reports a failure, and the run that most needs its stop reason is
+    the one that loses it. The body is what gives, because it is truncated
+    already and the footer cannot be reconstructed from anything else on
+    screen.
+    """
+    footer = _stop_reason_html(claude_response)
+    prefix = f"{heading}\n\n"
+    room = min(body_limit, MAX_CALLBACK_MESSAGE_LEN - len(prefix) - len(footer))
+
+    body = escape_html(claude_response.content)
+    if len(body) > room:
+        body = body[: max(0, room - len(TRUNCATION_NOTE))] + TRUNCATION_NOTE
+
+    return f"{prefix}{body}{footer}"
+
+
 def _is_within_root(path: Path, root: Path) -> bool:
     """Check whether path is within root directory."""
     try:
@@ -601,13 +626,12 @@ async def _handle_continue_action(query, context: ContextTypes.DEFAULT_TYPE) -> 
             # Update session ID in context
             context.user_data["claude_session_id"] = claude_response.session_id
 
-            # Send Claude's response. The footer is built last, after the
-            # body is clipped, so clipping can never swallow it.
-            body = escape_html(claude_response.content[:500])
-            if len(claude_response.content) > 500:
-                body += "..."
+            # This is a preview of a resumed session rather than the reply
+            # itself, so it keeps its short body limit.
             await query.message.reply_text(
-                f"✅ <b>Session Continued</b>\n\n{body}{_stop_reason_html(claude_response)}",
+                _compose_reply(
+                    "✅ <b>Session Continued</b>", claude_response, body_limit=500
+                ),
                 parse_mode="HTML",
             )
         else:
@@ -951,25 +975,10 @@ async def handle_quick_action_callback(
             else:
                 heading = f"⚠️ <b>{action.icon} {escape_html(action.name)} Stopped</b>"
 
-            # Heading and footer are built first and Claude's own text is
-            # clipped to whatever room is left. Appending the footer after a
-            # fixed-size clip could push the message past Telegram's limit,
-            # and reply_text does not split: the send would raise, the
-            # handler's except would report "Action Error", and the run that
-            # most needs its stop reason would be the one that loses it.
-            footer = _stop_reason_html(claude_response)
-            prefix = f"{heading}\n\n"
-            room = MAX_CALLBACK_MESSAGE_LEN - len(prefix) - len(footer)
-
-            response_text = escape_html(claude_response.content)
-            if len(response_text) > room:
-                response_text = (
-                    response_text[: max(0, room - len(TRUNCATION_NOTE))]
-                    + TRUNCATION_NOTE
-                )
-
             await query.message.reply_text(
-                f"{prefix}{response_text}{footer}",
+                _compose_reply(
+                    heading, claude_response, body_limit=MAX_CALLBACK_MESSAGE_LEN
+                ),
                 parse_mode="HTML",
             )
         else:

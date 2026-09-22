@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 from src.bot.handlers.callback import (
+    _compose_reply,
     _stop_reason_html,
     handle_quick_action_callback,
 )
@@ -154,3 +155,46 @@ class TestQuickActionMessageLength:
 
         assert "Short." in text
         assert "truncated" not in text
+
+
+class TestComposeReply:
+    """Both hand-built HTML messages compose through here."""
+
+    TELEGRAM_LIMIT = 4096
+
+    def test_short_reply_is_untouched(self):
+        text = _compose_reply(
+            "<b>Heading</b>",
+            _response(content="Short.", result_subtype="success"),
+            body_limit=500,
+        )
+
+        assert text == "<b>Heading</b>\n\nShort."
+
+    def test_body_limit_is_respected_below_the_cap(self):
+        text = _compose_reply(
+            "<b>Heading</b>",
+            _response(content="x" * 2000, result_subtype="success"),
+            body_limit=500,
+        )
+
+        assert len(text) < 600
+        assert "(Response truncated)" in text
+
+    def test_html_escaping_cannot_push_it_past_the_cap(self):
+        """500 raw characters of & escape to 2500, and the footer adds more."""
+        response = _response(
+            content="&" * 500,
+            result_subtype="error_during_execution",
+            errors=["&" * 500],
+            permission_denials=[
+                {"tool_name": "Bash", "tool_input": {"command": "&" * 100}}
+                for _ in range(8)
+            ],
+        )
+
+        text = _compose_reply("✅ <b>Session Continued</b>", response, body_limit=500)
+
+        assert len(text) <= self.TELEGRAM_LIMIT
+        assert "the run hit an error" in text
+        assert "8 tool calls were blocked" in text
