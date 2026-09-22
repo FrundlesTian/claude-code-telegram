@@ -27,7 +27,7 @@ def markdown_to_telegram_html(text: str) -> str:
 
     Order of operations:
     1. Extract fenced code blocks -> placeholders
-    2. Extract inline code -> placeholders
+    2. Extract inline code -> placeholders (backtick runs of any length)
     3. HTML-escape remaining text
     4. Convert bold (**text** / __text__)
     5. Convert italic (*text*, _text_ with word boundaries)
@@ -66,11 +66,28 @@ def markdown_to_telegram_html(text: str) -> str:
 
     # --- 2. Extract inline code ---
     def _replace_inline_code(m: re.Match) -> str:  # type: ignore[type-arg]
-        code = m.group(1)
+        code = m.group(2)
+        # CommonMark: one space is stripped from each end when both ends have
+        # one and the content is not all spaces. That is what lets a value
+        # which itself begins or ends with a backtick be written at all --
+        # see _inline_code in formatting.py, which relies on it.
+        if len(code) >= 2 and code[0] == " " and code[-1] == " " and code.strip(" "):
+            code = code[1:-1]
         escaped_code = escape_html(code)
         return _make_placeholder(f"<code>{escaped_code}</code>")
 
-    text = re.sub(r"`([^`\n]+)`", _replace_inline_code, text)
+    # A code span is delimited by a run of backticks and closed by a run of
+    # exactly the same length, so a span can carry backticks of its own. The
+    # lookarounds keep the matcher from starting or ending part-way through a
+    # longer run. Deleting the inner backticks instead would silently rewrite
+    # a shell command -- `whoami` is command substitution, whoami is an
+    # argument -- and this output is shown as an account of what a tool call
+    # actually was.
+    text = re.sub(
+        r"(?<!`)(`+)(?!`)([^\n]*?)(?<!`)\1(?!`)",
+        _replace_inline_code,
+        text,
+    )
 
     # --- 3. HTML-escape remaining text ---
     text = escape_html(text)

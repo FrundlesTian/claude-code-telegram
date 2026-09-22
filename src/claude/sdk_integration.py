@@ -717,6 +717,7 @@ class ClaudeSDKManager:
             claude_session_id = None
             result_content = None
             result_subtype: Optional[str] = None
+            result_num_turns: Optional[int] = None
             stop_reason: Optional[str] = None
             terminal_reason: Optional[str] = None
             result_errors: List[str] = []
@@ -729,6 +730,7 @@ class ClaudeSDKManager:
                     # getattr (not attribute access) throughout: older CLI
                     # versions and the test doubles omit these fields.
                     result_subtype = getattr(message, "subtype", None)
+                    result_num_turns = getattr(message, "num_turns", None)
                     stop_reason = getattr(message, "stop_reason", None)
                     terminal_reason = getattr(message, "terminal_reason", None)
                     result_errors = _as_error_list(getattr(message, "errors", None))
@@ -811,9 +813,21 @@ class ClaudeSDKManager:
                 template = TASK_COMPLETED_MSG if ran_to_completion else TASK_STOPPED_MSG
                 content = template.format(tools_summary=tools_summary)
 
-            num_turns = len(
-                [m for m in messages if isinstance(m, (UserMessage, AssistantMessage))]
-            )
+            # The CLI reports the authoritative turn count. Counting messages
+            # over-reports it -- every tool result arrives as another
+            # UserMessage -- and that number is now shown to the user in the
+            # stop-reason footer, so the approximation is only a fallback for
+            # a result that did not carry one.
+            if isinstance(result_num_turns, int) and result_num_turns >= 0:
+                num_turns = result_num_turns
+            else:
+                num_turns = len(
+                    [
+                        m
+                        for m in messages
+                        if isinstance(m, (UserMessage, AssistantMessage))
+                    ]
+                )
 
             if not ran_to_completion or permission_denials or result_errors:
                 logger.info(

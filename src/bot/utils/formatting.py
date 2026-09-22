@@ -69,11 +69,22 @@ def _inline_code(text: str) -> str:
     That mangles paths and shell commands, and on a line listing several
     denials the italics bleed from one entry into the next. Inline code is
     extracted before any Markdown conversion and escaped verbatim, so it is
-    the one wrapper that survives. A backtick inside the value would close
-    the span early, so those are dropped -- the value is already clipped for
-    length, so it is a display string, not a faithful copy.
+    the one wrapper that survives.
+
+    Backticks in the value are kept. Deleting them would silently rewrite the
+    thing being reported -- ``echo `whoami`` runs a command, ``echo whoami``
+    prints a word -- and the reader cannot tell a rewrite from the real
+    argument. Clipping for length is visible, because it leaves an ellipsis;
+    this would not be. So the delimiter is a run one backtick longer than the
+    longest run inside the value, which closes only on a run of its own
+    length, and a value that begins or ends with a backtick is padded with a
+    space at each end for the Markdown pass to strip back off.
     """
-    return "`" + text.replace("`", "") + "`"
+    longest_run = max((len(run) for run in re.findall(r"`+", text)), default=0)
+    fence = "`" * (longest_run + 1)
+    if text.startswith("`") or text.endswith("`"):
+        text = f" {text} "
+    return f"{fence}{text}{fence}"
 
 
 def _denial_argument(tool_input: Dict[str, Any]) -> str:

@@ -1832,3 +1832,80 @@ class TestStopReasonCapture:
         assert response.errors == []
         assert response.permission_denials == []
         assert response.completed_normally is True
+
+
+class TestNumTurns:
+    """num_turns comes from the CLI, not from counting messages."""
+
+    @pytest.fixture
+    def config(self, tmp_path):
+        return Settings(
+            telegram_bot_token="test:token",
+            telegram_bot_username="testbot",
+            approved_directory=tmp_path,
+            claude_timeout_seconds=2,
+        )
+
+    @pytest.fixture
+    def sdk_manager(self, config):
+        return ClaudeSDKManager(config)
+
+    async def test_result_message_wins_over_the_message_count(self, sdk_manager):
+        """Every tool result arrives as another UserMessage, so counting
+        messages over-reports the turns -- and the stop-reason footer shows
+        that number to the user."""
+        mock_factory = _mock_client_factory(
+            _make_assistant_message("one"),
+            _make_assistant_message("two"),
+            _make_assistant_message("three"),
+            _make_result_message(num_turns=10, subtype="error_max_turns"),
+        )
+
+        with patch(
+            "src.claude.sdk_integration.ClaudeSDKClient", side_effect=mock_factory
+        ):
+            response = await sdk_manager.execute_command(
+                prompt="Test prompt",
+                working_directory=Path("/test"),
+            )
+
+        assert response.num_turns == 10
+
+    async def test_zero_turns_is_taken_at_face_value(self, sdk_manager):
+        mock_factory = _mock_client_factory(
+            _make_assistant_message("one"),
+            _make_result_message(num_turns=0),
+        )
+
+        with patch(
+            "src.claude.sdk_integration.ClaudeSDKClient", side_effect=mock_factory
+        ):
+            response = await sdk_manager.execute_command(
+                prompt="Test prompt",
+                working_directory=Path("/test"),
+            )
+
+        assert response.num_turns == 0
+
+    async def test_falls_back_to_counting_when_the_cli_reports_nothing(
+        self, sdk_manager
+    ):
+        """An older CLI, or a result that never reached the query loop."""
+        result = _make_result_message()
+        del result.num_turns
+
+        mock_factory = _mock_client_factory(
+            _make_assistant_message("one"),
+            _make_assistant_message("two"),
+            result,
+        )
+
+        with patch(
+            "src.claude.sdk_integration.ClaudeSDKClient", side_effect=mock_factory
+        ):
+            response = await sdk_manager.execute_command(
+                prompt="Test prompt",
+                working_directory=Path("/test"),
+            )
+
+        assert response.num_turns == 2

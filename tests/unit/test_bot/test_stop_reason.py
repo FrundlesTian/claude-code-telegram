@@ -271,7 +271,9 @@ class TestFooterSurvivesTheMarkdownPass:
         html = markdown_to_telegram_html(footer)
         assert "<code>cd / &amp;&amp; ls</code>" in html
 
-    def test_a_backtick_in_the_argument_cannot_break_the_span(self):
+    def test_backticks_in_the_argument_are_preserved(self):
+        """`whoami` runs a command; whoami prints a word. Dropping the
+        backticks would report a different call than the one blocked."""
         footer = format_stop_reason(
             _response(
                 result_subtype="success",
@@ -283,7 +285,52 @@ class TestFooterSurvivesTheMarkdownPass:
 
         assert footer is not None
         html = markdown_to_telegram_html(footer)
-        assert "<code>echo whoami</code>" in html
+        assert "<code>echo `whoami`</code>" in html
+
+    def test_consecutive_backticks_are_preserved(self):
+        footer = format_stop_reason(
+            _response(
+                result_subtype="success",
+                permission_denials=[
+                    {"tool_name": "Bash", "tool_input": {"command": "echo ``x``"}}
+                ],
+            )
+        )
+
+        assert footer is not None
+        html = markdown_to_telegram_html(footer)
+        assert "<code>echo ``x``</code>" in html
+
+    def test_an_argument_that_is_only_backticks_survives(self):
+        footer = format_stop_reason(
+            _response(
+                result_subtype="success",
+                permission_denials=[
+                    {"tool_name": "Bash", "tool_input": {"command": "`"}}
+                ],
+            )
+        )
+
+        assert footer is not None
+        html = markdown_to_telegram_html(footer)
+        assert "<code>`</code>" in html
+
+    def test_backticks_with_html_metacharacters(self):
+        footer = format_stop_reason(
+            _response(
+                result_subtype="success",
+                permission_denials=[
+                    {
+                        "tool_name": "Bash",
+                        "tool_input": {"command": "echo `a && b` > /x"},
+                    }
+                ],
+            )
+        )
+
+        assert footer is not None
+        html = markdown_to_telegram_html(footer)
+        assert "<code>echo `a &amp;&amp; b` &gt; /x</code>" in html
 
     def test_error_prose_is_not_italicised(self):
         footer = format_stop_reason(
