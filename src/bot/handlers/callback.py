@@ -33,6 +33,24 @@ def _stop_reason_html(claude_response: ClaudeResponse) -> str:
     return markdown_to_telegram_html(footer) if footer else ""
 
 
+def _clip_escaped(body: str, limit: int) -> str:
+    """Clip already-escaped HTML without cutting an entity in half.
+
+    The clip has to happen after escaping, because escaping is what can
+    quintuple the length and blow the budget. But a cut inside ``&amp;``
+    leaves ``&am``, which Telegram rejects outright with "can't parse
+    entities" -- and the handler's except would report a generic failure for
+    the stopped run this footer exists to explain. Every ``&`` here opens an
+    entity, since escape_html escaped the literal ones, so a trailing ``&``
+    with no ``;`` after it is a cut one and goes.
+    """
+    clipped = body[:limit]
+    opener = clipped.rfind("&")
+    if opener != -1 and ";" not in clipped[opener:]:
+        clipped = clipped[:opener]
+    return clipped
+
+
 def _compose_reply(
     heading: str, claude_response: ClaudeResponse, body_limit: int
 ) -> str:
@@ -53,7 +71,8 @@ def _compose_reply(
 
     body = escape_html(claude_response.content)
     if len(body) > room:
-        body = body[: max(0, room - len(TRUNCATION_NOTE))] + TRUNCATION_NOTE
+        body = _clip_escaped(body, max(0, room - len(TRUNCATION_NOTE)))
+        body += TRUNCATION_NOTE
 
     return f"{prefix}{body}{footer}"
 

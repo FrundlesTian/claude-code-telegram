@@ -4,6 +4,8 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 from src.bot.handlers.callback import (
+    TRUNCATION_NOTE,
+    _clip_escaped,
     _compose_reply,
     _handle_continue_action,
     _stop_reason_html,
@@ -248,3 +250,55 @@ class TestContinueSessionHeading:
         assert text.startswith("⚠️ <b>Session Continued</b>")
         assert "✅" not in text
         assert "turn limit reached after 10 turns" in text
+
+
+class TestEntitySafeClipping:
+    """A cut inside &amp; leaves &am, which Telegram rejects outright.
+
+    The handler's except would then report a generic failure, losing the
+    reply for exactly the stopped run the footer exists to explain.
+    """
+
+    @staticmethod
+    def _dangling(text: str) -> bool:
+        """True when the text ends in a half-written HTML entity."""
+        opener = text.rfind("&")
+        return opener != -1 and ";" not in text[opener:]
+
+    def test_cut_inside_an_entity_drops_it(self):
+        assert _clip_escaped("ab&amp;", 5) == "ab"
+
+    def test_cut_on_the_entity_boundary_keeps_it(self):
+        assert _clip_escaped("ab&amp;cd", 7) == "ab&amp;"
+
+    def test_a_complete_entity_earlier_is_not_disturbed(self):
+        assert _clip_escaped("&amp;xyz", 6) == "&amp;x"
+
+    def test_nothing_to_clip(self):
+        assert _clip_escaped("abc", 10) == "abc"
+
+    def test_no_cut_point_leaves_it_empty(self):
+        assert _clip_escaped("&amp;", 2) == ""
+
+    def test_compose_reply_never_emits_a_half_entity(self):
+        """Walk the cut across every offset in a run of escaping characters."""
+        for pad in range(64):
+            response = _response(
+                content="x" * pad + "&<>" * 200, result_subtype="success"
+            )
+
+            text = _compose_reply("<b>H</b>", response, body_limit=200)
+
+            body = text[len("<b>H</b>\n\n") :]
+            if body.endswith(TRUNCATION_NOTE):
+                body = body[: -len(TRUNCATION_NOTE)]
+            assert not self._dangling(body), f"pad={pad}: {body[-10:]!r}"
+
+    async def test_quick_action_reply_never_emits_a_half_entity(self, tmp_path):
+        text = await _run_quick_action(
+            _response(content="&" * 5000, result_subtype="error_max_turns"),
+            Path(tmp_path),
+        )
+
+        head, _, tail = text.rpartition("...")
+        assert not self._dangling(head or text)
