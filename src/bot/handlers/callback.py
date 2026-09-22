@@ -626,11 +626,18 @@ async def _handle_continue_action(query, context: ContextTypes.DEFAULT_TYPE) -> 
             # Update session ID in context
             context.user_data["claude_session_id"] = claude_response.session_id
 
+            # The session did continue either way, so the words stay; it is
+            # the tick that would be the false report, sitting above a footer
+            # that says the run was cut short.
+            tick = "✅" if claude_response.completed_normally else "⚠️"
+
             # This is a preview of a resumed session rather than the reply
             # itself, so it keeps its short body limit.
             await query.message.reply_text(
                 _compose_reply(
-                    "✅ <b>Session Continued</b>", claude_response, body_limit=500
+                    f"{tick} <b>Session Continued</b>",
+                    claude_response,
+                    body_limit=500,
                 ),
                 parse_mode="HTML",
             )

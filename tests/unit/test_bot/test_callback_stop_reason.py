@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from src.bot.handlers.callback import (
     _compose_reply,
+    _handle_continue_action,
     _stop_reason_html,
     handle_quick_action_callback,
 )
@@ -193,8 +194,57 @@ class TestComposeReply:
             ],
         )
 
-        text = _compose_reply("✅ <b>Session Continued</b>", response, body_limit=500)
+        text = _compose_reply("⚠️ <b>Session Continued</b>", response, body_limit=500)
 
         assert len(text) <= self.TELEGRAM_LIMIT
+        assert text.startswith("⚠️ <b>Session Continued</b>")
         assert "the run hit an error" in text
         assert "8 tool calls were blocked" in text
+
+
+async def _run_continue_action(claude_response, tmp_path):
+    """Drive _handle_continue_action and return the text it replied with."""
+    claude_integration = AsyncMock()
+    claude_integration.continue_session = AsyncMock(return_value=claude_response)
+
+    settings = MagicMock()
+    settings.approved_directory = tmp_path
+
+    query = MagicMock()
+    query.from_user.id = 123
+    query.edit_message_text = AsyncMock()
+    query.message.reply_text = AsyncMock()
+
+    context = MagicMock()
+    context.user_data = {"current_directory": tmp_path}
+    context.bot_data = {
+        "claude_integration": claude_integration,
+        "settings": settings,
+    }
+
+    await _handle_continue_action(query, context)
+
+    assert query.message.reply_text.call_args is not None, "no reply was sent"
+    return query.message.reply_text.call_args.args[0]
+
+
+class TestContinueSessionHeading:
+    """A green tick above a "Stopped" footer is the #172 contradiction again."""
+
+    async def test_clean_run_keeps_the_tick(self, tmp_path):
+        text = await _run_continue_action(
+            _response(result_subtype="success"), Path(tmp_path)
+        )
+
+        assert text.startswith("✅ <b>Session Continued</b>")
+
+    async def test_stopped_run_loses_the_tick_but_keeps_the_words(self, tmp_path):
+        """The session did continue; it is the tick that would be false."""
+        text = await _run_continue_action(
+            _response(result_subtype="error_max_turns", terminal_reason="max_turns"),
+            Path(tmp_path),
+        )
+
+        assert text.startswith("⚠️ <b>Session Continued</b>")
+        assert "✅" not in text
+        assert "turn limit reached after 10 turns" in text
