@@ -6,6 +6,7 @@ classic mode, delegates to existing full-featured handlers.
 """
 
 import asyncio
+import hashlib
 import re
 import time
 import uuid
@@ -14,6 +15,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 import structlog
+from claude_agent_sdk import ToolPermissionContext
 from telegram import (
     BotCommand,
     InlineKeyboardButton,
@@ -134,6 +136,7 @@ class PendingToolApproval:
 
     user_id: int
     future: "asyncio.Future[bool]"
+    tool_use_id: Optional[str] = None
 
 
 class MessageOrchestrator:
@@ -1776,20 +1779,60 @@ class MessageOrchestrator:
         chat_id: int,
         bot: Any,
         message_thread_id: Optional[int],
-    ) -> Callable[[str, Dict[str, Any]], Awaitable[bool]]:
+    ) -> Callable[[str, Dict[str, Any], ToolPermissionContext], Awaitable[bool]]:
         """Build an approval_callback closure for a single Claude run.
 
         Sends a Telegram Allow/Deny prompt for a tool call and blocks (with a
         timeout) until the user responds via the ``tapv:`` callback handler.
         Fails closed (denies) on timeout.
+
+        ``permission_context.suggestions`` is intentionally not exposed as an
+        extra button: those values are permission-policy updates, potentially
+        persisted beyond this one tool call, while this UI grants or denies a
+        single action.
         """
 
-        async def request_approval(tool_name: str, tool_input: Dict[str, Any]) -> bool:
-            request_id = uuid.uuid4().hex[:12]
-            summary = self._summarize_tool_input_for_approval(tool_name, tool_input)
-            text = f"⚠️ Claude wants to run <b>{escape_html(tool_name)}</b>"
-            if summary:
-                text += f"\n<code>{escape_html(summary)}</code>"
+        async def request_approval(
+            tool_name: str,
+            tool_input: Dict[str, Any],
+            permission_context: ToolPermissionContext,
+        ) -> bool:
+            if permission_context.tool_use_id:
+                request_key = f"{user_id}:{permission_context.tool_use_id}"
+                request_id = hashlib.sha256(request_key.encode()).hexdigest()[:12]
+            else:
+                request_id = uuid.uuid4().hex[:12]
+
+            if permission_context.title:
+                text = f"⚠️ <b>{escape_html(permission_context.title)}</b>"
+            else:
+                action_name = permission_context.display_name or tool_name
+                text = "⚠️ Claude wants to run " f"<b>{escape_html(action_name)}</b>"
+
+            if permission_context.description:
+                text += f"\n{escape_html(permission_context.description)}"
+            else:
+                summary = self._summarize_tool_input_for_approval(tool_name, tool_input)
+                if summary:
+                    text += f"\n<code>{escape_html(summary)}</code>"
+
+            details = []
+            if permission_context.blocked_path:
+                details.append(
+                    "Blocked path: "
+                    f"<code>{escape_html(permission_context.blocked_path)}</code>"
+                )
+            if permission_context.decision_reason:
+                details.append(
+                    "Reason: " f"{escape_html(permission_context.decision_reason)}"
+                )
+            if permission_context.agent_id:
+                details.append(
+                    "Sub-agent: "
+                    f"<code>{escape_html(permission_context.agent_id)}</code>"
+                )
+            if details:
+                text += "\n\n" + "\n".join(details)
             text += "\n\nAllow this action?"
 
             keyboard = InlineKeyboardMarkup(
@@ -1811,7 +1854,9 @@ class MessageOrchestrator:
             # stalling the future until timeout.
             future: "asyncio.Future[bool]" = asyncio.get_running_loop().create_future()
             self._pending_tool_approvals[request_id] = PendingToolApproval(
-                user_id=user_id, future=future
+                user_id=user_id,
+                future=future,
+                tool_use_id=permission_context.tool_use_id,
             )
 
             try:
