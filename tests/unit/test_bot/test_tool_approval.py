@@ -7,7 +7,6 @@ Covers:
 """
 
 import asyncio
-import hashlib
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -119,15 +118,67 @@ class TestMakeToolApprovalCallback:
         assert "Sub-agent: <code>agent-7</code>" in message
         assert "/fallback.py" not in message
 
-        expected_id = hashlib.sha256(b"100:tool-use-123").hexdigest()[:12]
-        assert next(iter(orchestrator._pending_tool_approvals)) == expected_id
-        pending = orchestrator._pending_tool_approvals[expected_id]
+        request_id = next(iter(orchestrator._pending_tool_approvals))
+        assert len(request_id) == 12
+        pending = orchestrator._pending_tool_approvals[request_id]
         assert pending.tool_use_id == "tool-use-123"
         keyboard = bot.send_message.await_args.kwargs["reply_markup"]
         assert keyboard.inline_keyboard[0][0].callback_data == (
-            f"tapv:allow:{expected_id}"
+            f"tapv:allow:{request_id}"
         )
 
+        pending.future.set_result(True)
+        assert await task is True
+
+    async def test_repeated_tool_use_id_keeps_requests_independent(self, orchestrator):
+        bot = _make_bot()
+        request_approval = orchestrator._make_tool_approval_callback(
+            user_id=100, chat_id=555, bot=bot, message_thread_id=None
+        )
+        permission_context = ToolPermissionContext(tool_use_id="replayed-tool-use")
+
+        first = asyncio.ensure_future(
+            request_approval("Bash", {"command": "echo first"}, permission_context)
+        )
+        second = asyncio.ensure_future(
+            request_approval("Bash", {"command": "echo second"}, permission_context)
+        )
+        await asyncio.sleep(0)
+
+        assert len(orchestrator._pending_tool_approvals) == 2
+        pending = list(orchestrator._pending_tool_approvals.values())
+        assert all(item.tool_use_id == "replayed-tool-use" for item in pending)
+        pending[0].future.set_result(True)
+        pending[1].future.set_result(False)
+        assert await first is True
+        assert await second is False
+
+    async def test_truncates_oversized_permission_context(self, orchestrator):
+        bot = _make_bot()
+        request_approval = orchestrator._make_tool_approval_callback(
+            user_id=100, chat_id=555, bot=bot, message_thread_id=None
+        )
+        oversized = "<&>" * 4000
+        permission_context = ToolPermissionContext(
+            title=oversized,
+            description=oversized,
+            blocked_path=oversized,
+            decision_reason=oversized,
+            agent_id=oversized,
+        )
+
+        task = asyncio.ensure_future(
+            request_approval("Bash", {"command": oversized}, permission_context)
+        )
+        await asyncio.sleep(0)
+
+        message = bot.send_message.await_args.kwargs["text"]
+        assert len(message) < 4096
+        assert "…" in message
+        assert message.count("<b>") == message.count("</b>")
+        assert message.count("<code>") == message.count("</code>")
+
+        pending = next(iter(orchestrator._pending_tool_approvals.values()))
         pending.future.set_result(True)
         assert await task is True
 

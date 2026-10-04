@@ -6,7 +6,6 @@ classic mode, delegates to existing full-featured handlers.
 """
 
 import asyncio
-import hashlib
 import re
 import time
 import uuid
@@ -92,6 +91,22 @@ def _redact_secrets(text: str) -> str:
             result,
         )
     return result
+
+
+def _escape_html_limited(value: str, max_length: int) -> str:
+    """Escape text and truncate it without splitting an HTML entity."""
+    escaped = escape_html(value)
+    if len(escaped) <= max_length:
+        return escaped
+
+    low, high = 0, len(value)
+    while low < high:
+        middle = (low + high + 1) // 2
+        if len(escape_html(value[:middle])) + 1 <= max_length:
+            low = middle
+        else:
+            high = middle - 1
+    return escape_html(value[:low]) + "…"
 
 
 # Tool name -> friendly emoji mapping for verbose output
@@ -1797,40 +1812,39 @@ class MessageOrchestrator:
             tool_input: Dict[str, Any],
             permission_context: ToolPermissionContext,
         ) -> bool:
-            if permission_context.tool_use_id:
-                request_key = f"{user_id}:{permission_context.tool_use_id}"
-                request_id = hashlib.sha256(request_key.encode()).hexdigest()[:12]
-            else:
-                request_id = uuid.uuid4().hex[:12]
+            request_id = uuid.uuid4().hex[:12]
 
             if permission_context.title:
-                text = f"⚠️ <b>{escape_html(permission_context.title)}</b>"
+                title = _escape_html_limited(permission_context.title, 600)
+                text = f"⚠️ <b>{title}</b>"
             else:
                 action_name = permission_context.display_name or tool_name
-                text = "⚠️ Claude wants to run " f"<b>{escape_html(action_name)}</b>"
+                action_name = _escape_html_limited(action_name, 200)
+                text = f"⚠️ Claude wants to run <b>{action_name}</b>"
 
             if permission_context.description:
-                text += f"\n{escape_html(permission_context.description)}"
+                description = _escape_html_limited(permission_context.description, 900)
+                text += f"\n{description}"
             else:
                 summary = self._summarize_tool_input_for_approval(tool_name, tool_input)
                 if summary:
-                    text += f"\n<code>{escape_html(summary)}</code>"
+                    summary = _escape_html_limited(summary, 1000)
+                    text += f"\n<code>{summary}</code>"
 
             details = []
             if permission_context.blocked_path:
-                details.append(
-                    "Blocked path: "
-                    f"<code>{escape_html(permission_context.blocked_path)}</code>"
+                blocked_path = _escape_html_limited(
+                    permission_context.blocked_path, 700
                 )
+                details.append(f"Blocked path: <code>{blocked_path}</code>")
             if permission_context.decision_reason:
-                details.append(
-                    "Reason: " f"{escape_html(permission_context.decision_reason)}"
+                decision_reason = _escape_html_limited(
+                    permission_context.decision_reason, 700
                 )
+                details.append(f"Reason: {decision_reason}")
             if permission_context.agent_id:
-                details.append(
-                    "Sub-agent: "
-                    f"<code>{escape_html(permission_context.agent_id)}</code>"
-                )
+                agent_id = _escape_html_limited(permission_context.agent_id, 200)
+                details.append(f"Sub-agent: <code>{agent_id}</code>")
             if details:
                 text += "\n\n" + "\n".join(details)
             text += "\n\nAllow this action?"
